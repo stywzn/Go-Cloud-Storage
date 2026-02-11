@@ -11,14 +11,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stywzn/Go-Cloud-Storage/internal/model"
 	"github.com/stywzn/Go-Cloud-Storage/internal/repository"
+	"github.com/stywzn/Go-Cloud-Storage/internal/storage"
 )
 
 type FileHandler struct {
-	repo *repository.FileRepository
+	repo  *repository.FileRepository
+	store storage.StorageEngine
 }
 
-func NewFileHandler(repo *repository.FileRepository) *FileHandler {
-	return &FileHandler{repo: repo}
+func NewFileHandler(repo *repository.FileRepository, store storage.StorageEngine) *FileHandler {
+	return &FileHandler{repo: repo, store: store}
 }
 
 // UploadHandler 上传接口

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  # 专门给存储服务用的数据库
+  mysql:
+    image: mysql:8.0
+    container_name: storage-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: cloud_storage  # 👈 自动创建库，省得你手动敲 SQL
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+
+volumes:
+  mysql_data:

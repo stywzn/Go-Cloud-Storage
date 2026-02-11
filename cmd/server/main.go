@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stywzn/Go-Cloud-Storage/internal/handler"
 	"github.com/stywzn/Go-Cloud-Storage/internal/repository"
+	"github.com/stywzn/Go-Cloud-Storage/internal/storage"
 	"github.com/stywzn/Go-Cloud-Storage/pkg/db"
 )
 
@@ -20,6 +21,9 @@ func main() {
 	// 3. 依赖注入
 	fileRepo := repository.NewFileRepository(db.DB)
 	fileHandler := handler.NewFileHandler(fileRepo)
+
+	store := storage.NewLocalStorage("./storage") // 初始化本地存储引擎
+	fileHandler := handler.NewFileHandler(fileRepo, store)
 
 	// 4. 启动 Web 服务
 	r := gin.Default()
