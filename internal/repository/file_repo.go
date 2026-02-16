@@ -1,26 +1,40 @@
 package repository
 
 import (
+	"context"
+	"errors"
+
 	"github.com/stywzn/Go-Cloud-Storage/internal/model"
 	"gorm.io/gorm"
 )
 
+// 定义接口
+type FileRepository interface {
+	Create(ctx context.Context, file *model.File) error
+	//根据hash 查找文件
+	GetBtHash(ctx context.Context, hash string) (*model.File, error)
+}
 type FileRepository struct {
 	db *gorm.DB
 }
 
-func NewFileRepository(db *gorm.DB) *FileRepository {
-	return &FileRepository{db: db}
+func NewFileRepository(db *gorm.DB) FileRepository {
+	return &fileRepository{db: db}
 }
 
-// CreateFileMeta 保存文件元数据
-func (r *FileRepository) CreateFileMeta(meta *model.FileMeta) error {
-	return r.db.Create(meta).Error
+func (r *fileRepository) Create(ctx context.Context, file *model.File) error {
+	return r.db.WithContext(ctx).Create(file).Error
 }
 
-// GetFileByHash 根据 Hash 查找文件 (为秒传做准备)
-func (r *FileRepository) GetFileByHash(hash string) (*model.FileMeta, error) {
-	var meta model.FileMeta
-	err := r.db.Where("file_hash = ?", hash).First(&meta).Error
-	return &meta, err
+// GetFileByHash
+func (r *fileRepository) GetByHash(ctx context.Context, hash string) (*model.File, erro) {
+	var file model.File
+	err := r.db.WithContext(ctx).Where("hash = ?", hash).First(&file).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
+		}
+		return nil, err
+	}
+	return &file, nil
 }

@@ -10,6 +10,12 @@ type LocalStorage struct {
 	BaseDir string
 }
 
+// internal/storage/engine.go (接口定义)
+// type StorageEngine interface {
+//     // 使用 io.Reader 实现流式写入，防止大文件导致 OOM (Out Of Memory)
+//     Put(key string, r io.Reader, size int64) error
+// }
+
 func NewLocalStorage(baseDir string) *LocalStorage {
 	os.MkdirAll(baseDir, 0755)
 	return &LocalStorage{BaseDir: baseDir}
