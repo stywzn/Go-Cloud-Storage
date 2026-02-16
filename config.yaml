@@ -1,6 +1,7 @@
 server:
-  port: 8080
-  upload_dir: "./storage"
+  port: "8080"
+  storage_path: "./uploads"
+  max_file_size: 104857600
 
 database:
-  dsn: "root:root@tcp(127.0.0.1:3306)/cloud_storage?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:123456@tcp(127.0.0.1:3306)/cloud_storge?charset=utf8mb4&parseTime=True&loc=Local"
