@@ -36,7 +36,7 @@ func (h *FileHandler) UploadHandler(c *gin.Context) {
 	//返回响应
 	c.JSON(http.StatusOK, gin.H{
 		"code": 200,
-		"smg":  "upload success",
-		"date": res,
+		"msg":  "upload success",
+		"data": res,
 	})
 }
