@@ -9,6 +9,7 @@ main.exe
 # --- 2. 配置文件 (Secrets) ---
 # ⚠️ 绝对不能上传真实的配置文件，里面有密码！
 config/config.yaml
+!config/config.example.yaml
 .env
 
 # --- 3. 运行时数据 (Data) ---

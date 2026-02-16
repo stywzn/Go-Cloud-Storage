@@ -8,8 +8,8 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
+	Server   ServerConfig   `mapstructure:"server"`
+	Database DatabaseConfig `mapstructure:"database"`
 }
 
 type ServerConfig struct {
@@ -55,4 +55,5 @@ func LoadConfig() {
 	}
 
 	log.Println("Config loaded successfully")
+	// log.Printf("Debug Config: %+v\n", GlobalConfig)
 }

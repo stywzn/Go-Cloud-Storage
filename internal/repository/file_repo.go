@@ -12,9 +12,9 @@ import (
 type FileRepository interface {
 	Create(ctx context.Context, file *model.File) error
 	//根据hash 查找文件
-	GetBtHash(ctx context.Context, hash string) (*model.File, error)
+	GetByHash(ctx context.Context, hash string) (*model.File, error)
 }
-type FileRepository struct {
+type fileRepository struct {
 	db *gorm.DB
 }
 
@@ -27,12 +27,12 @@ func (r *fileRepository) Create(ctx context.Context, file *model.File) error {
 }
 
 // GetFileByHash
-func (r *fileRepository) GetByHash(ctx context.Context, hash string) (*model.File, erro) {
+func (r *fileRepository) GetByHash(ctx context.Context, hash string) (*model.File, error) {
 	var file model.File
 	err := r.db.WithContext(ctx).Where("hash = ?", hash).First(&file).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
+			return nil, nil
 		}
 		return nil, err
 	}

@@ -1,29 +1,42 @@
 package main
 
 import (
-	"github.com/gin-gonic/gin"
+	"context"
+	"errors"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stywzn/Go-Cloud-Storage/internal/handler"
+	"github.com/stywzn/Go-Cloud-Storage/internal/model"
 	"github.com/stywzn/Go-Cloud-Storage/internal/repository"
 	"github.com/stywzn/Go-Cloud-Storage/internal/service"
 	"github.com/stywzn/Go-Cloud-Storage/internal/storage"
 	"github.com/stywzn/Go-Cloud-Storage/pkg/config"
 	"github.com/stywzn/Go-Cloud-Storage/pkg/db"
 	"github.com/stywzn/Go-Cloud-Storage/pkg/logger"
+	"go.uber.org/zap"
 )
 
 func main() {
-	// 1. 加载配置 (pkg/config)
-	// 它会自动读取 config/config.yaml
-	config.Init()
 
-	// 2. 初始化日志 (pkg/logger)
+	config.LoadConfig()
+	// fmt.Printf("正在尝试连接数据库: [%s]\n", config.GlobalConfig.Database.DSN)
+	// 初始化日志 (pkg/logger)
 	logger.Init()
 	logger.Log.Info("系统启动中...")
+	// 初始化数据库
+	dsn := config.GlobalConfig.Database.DSN
+	if err := db.Init(dsn); err != nil {
+		logger.Log.Fatal("Database connection failed", zap.Error(err))
+	}
 
-	// 3. 初始化数据库 (pkg/db)
-	// 使用配置里的参数连接 MySQL
-	db.Init(config.GlobalConfig.Database.DSN)
+	if err := db.DB.AutoMigrate(&model.File{}); err != nil {
+		logger.Log.Fatal("Database migration failed", zap.Error(err))
+	}
 
 	// 底层依赖
 	store := storage.NewLocalStorage(config.GlobalConfig.Server.StoragePath)
@@ -34,14 +47,36 @@ func main() {
 	// Handler 初始化
 	fileHandler := handler.NewFileHandler(fileService)
 	//路由
-	r := gin.Default()
-	r.POST("/upload", fileHandelr.UploadHandler)
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
 
-	// 启动
-	addr := ":" + config.GlobalConfig.Server.Port
-	logger.Log.Info("Server starting", "addr", addr)
+	r.POST("/upload", fileHandler.UploadHandler)
 
-	if err := r.Run(addr); err != nil {
-		logger.Log.Error("Server start failed", "err", err)
+	srv := &http.Server{
+		Addr:    ":" + config.GlobalConfig.Server.Port,
+		Handler: r,
 	}
+
+	go func() {
+		logger.Log.Info("Server is running", zap.String("addr", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Log.Fatal("Server start failed", zap.Error(err))
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Log.Info("Shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Log.Fatal("Server forced to shutdown", zap.Error(err))
+	}
+
+	logger.Log.Info("Server exited properly")
 }

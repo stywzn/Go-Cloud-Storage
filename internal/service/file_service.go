@@ -16,7 +16,7 @@ import (
 
 // 定义业务逻辑
 type FileService interface {
-	UploadFiler(ctx context.Context, file *multipart.FileHeader) (*model.File, error)
+	UploadFile(ctx context.Context, file *multipart.FileHeader) (*model.File, error)
 }
 
 type fileService struct {
@@ -33,7 +33,7 @@ func NewFileService(repo repository.FileRepository, store storage.StorageEngine)
 }
 
 // UploadFile
-func (s *fileService) Uploadfile(ctx context.Context, fileHeader *multipart.FileHeader) (*model.File, error) {
+func (s *fileService) UploadFile(ctx context.Context, fileHeader *multipart.FileHeader) (*model.File, error) {
 	//打开文件
 	src, err := fileHeader.Open()
 	if err != nil {
@@ -70,12 +70,12 @@ func (s *fileService) Uploadfile(ctx context.Context, fileHeader *multipart.File
 	//准备数据库模型
 	newFile := &model.File{
 		OriginalName: fileHeader.Filename,
-		StoreName:    storedName,
+		StoredName:   storedName,
 		Hash:         fileHash,
 		Size:         fileHeader.Size,
 		Type:         fileHeader.Header.Get("Content-Type"),
 	}
-	if err := r.Create(ctx, newFile); err != nil {
+	if err := s.repo.Create(ctx, newFile); err != nil {
 		return nil, err
 	}
 	return newFile, nil
