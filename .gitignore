@@ -1,24 +1,24 @@
 # --- 1. 编译产物 (Binaries) ---
-# 忽略所有编译出来的可执行文件
 /bin/
+# 忽略根目录的 server (如果偶尔在根目录编译)
+server
 main
 main.exe
 *.exe
 *.dll
 
 # --- 2. 配置文件 (Secrets) ---
-# ⚠️ 绝对不能上传真实的配置文件，里面有密码！
 config/config.yaml
 !config/config.example.yaml
 .env
 
-# --- 3. 运行时数据 (Data) ---
-# 忽略存储目录下的所有文件 (你上传的图片不要传到git)
-storage/*
-# 但是！保留 storage 文件夹本身 (为了让别人 clone 下来时有这个目录)
-!storage/.gitkeep
+
+uploads/*
+# 保留 uploads 文件夹本身 (为了让别人 clone 下来时有这个空目录)
+!uploads/.gitkeep
 
 # --- 4. IDE 和 系统文件 (Junk) ---
 .idea/
 .vscode/
 .DS_Store
+note*
