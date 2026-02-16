@@ -1,8 +1,7 @@
 server:
   port: "8080"
   storage_path: "./storage"
-  max_size: 104857600 # 100MB
+  max_size: 104857600 
 
 database:
-  # 注意：这里写示例密码，不要写真的！
   dsn: "root:password@tcp(127.0.0.1:3306)/cloud_storage?charset=utf8mb4&parseTime=True&loc=Local"
