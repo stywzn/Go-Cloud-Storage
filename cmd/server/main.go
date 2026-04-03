@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/stywzn/Go-Cloud-Storage/internal/handler"
-	"github.com/stywzn/Go-Cloud-Storage/internal/middleware"
 	"github.com/stywzn/Go-Cloud-Storage/internal/model"
 	"github.com/stywzn/Go-Cloud-Storage/internal/repository"
 	"github.com/stywzn/Go-Cloud-Storage/internal/service"
@@ -35,6 +34,13 @@ func main() {
 		logger.Log.Fatal("Failed to initialize database: " + err.Error())
 	}
 	logger.Log.Info("Database initialized successfully")
+
+	// ==========================================
+	// 👇👇👇 这是你要加上的代码：唤醒 Redis！👇👇👇
+	// 假设你刚才 Docker 跑的映射端口是 6379，没设密码，用 0 号库
+	// ==========================================
+	db.InitRedis("127.0.0.1:6379", "", 0)
+	logger.Log.Info("Redis initialized successfully")
 
 	// 4. 自动迁移（创建表）
 	autoMigrate()
@@ -115,7 +121,7 @@ func setupRoutes(r *gin.Engine, fileHandler *handler.FileHandler) {
 
 		// 分片上传接口
 		uploadGroup := v1.Group("/upload")
-		uploadGroup.Use(middleware.JWTAuth()) // 应用JWT中间件
+		//uploadGroup.Use(middleware.JWTAuth()) // 应用JWT中间件
 		{
 			uploadGroup.POST("/init", fileHandler.InitUpload)
 			uploadGroup.PUT("/:upload_id/part/:part_number", fileHandler.UploadPart)

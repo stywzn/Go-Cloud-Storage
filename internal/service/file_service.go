@@ -16,6 +16,7 @@ import (
 	"github.com/stywzn/Go-Cloud-Storage/internal/model"
 	"github.com/stywzn/Go-Cloud-Storage/internal/repository"
 	"github.com/stywzn/Go-Cloud-Storage/internal/storage"
+	"github.com/stywzn/Go-Cloud-Storage/pkg/db"
 )
 
 type FileService interface {
@@ -149,6 +150,7 @@ func (s *fileService) InitUpload(ctx context.Context, userID uint, fileName stri
 		TotalChunks:     totalChunks,
 		CompletedChunks: "[]",
 		Status:          0,
+		FileHash:        "",
 	}
 
 	if err := s.taskRepo.CreateTask(ctx, task); err != nil {
@@ -246,12 +248,30 @@ func (s *fileService) CompleteUpload(ctx context.Context, uploadID string, userI
 		return nil, fmt.Errorf("incomplete chunks: %d/%d", len(completed), task.TotalChunks)
 	}
 
+	// ==========================================
+	// 【核心优化】：Redis 分布式锁，防御多协程并发合并
+	// ==========================================
+	lockKey := fmt.Sprintf("lock:merge:%s", uploadID)
+	// 尝试获取锁，设置 30 秒超时防死锁
+	acquired, err := db.RDB.SetNX(ctx, lockKey, "locked", 30*time.Second).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis error checking lock: %v", err)
+	}
+	if !acquired {
+		// 没拿到锁，说明别的网络请求正在合并这个文件，直接阻断脏写
+		return nil, errors.New("merge already in progress for this upload")
+	}
+	// 确保函数退出时（无论成功失败）释放锁
+	defer db.RDB.Del(context.Background(), lockKey)
+	// ==========================================
+
 	// 调用存储引擎合并分片
 	parts := make([]storage.Part, len(completed))
 	for i, partNum := range completed {
 		parts[i] = storage.Part{PartNumber: partNum}
 	}
 
+	// 真正的合并执行处
 	finalKey, err := s.store.CompleteUpload(uploadID, parts)
 	if err != nil {
 		metrics.RecordUploadComplete("failed")

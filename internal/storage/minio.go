@@ -137,3 +137,10 @@ func (m *MinIOStorage) AbortUpload(uploadID string) error {
 
 	return nil
 }
+
+func (m *MinIOStorage) UploadStream(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
+	_, err := m.client.PutObject(ctx, m.bucket, objectName, reader, size, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	return err
+}

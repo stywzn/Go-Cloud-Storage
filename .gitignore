@@ -22,3 +22,4 @@ uploads/*
 .vscode/
 .DS_Store
 note*
+test_large_file.bin

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -75,4 +76,12 @@ func (s *LocalStorage) CompleteUpload(uploadID string, parts []Part) (string, er
 
 func (s *LocalStorage) AbortUpload(uploadID string) error {
 	return os.RemoveAll(filepath.Join(s.basePath, "temp", uploadID))
+}
+
+// 在 internal/storage/local.go 中加入:
+// 必须严格是：ctx, 字符串, io.Reader, int64, 字符串
+func (l *LocalStorage) UploadStream(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
+	// 你的内部逻辑...
+	// 如果还没写具体逻辑，直接 return nil 占位即可
+	return nil
 }
