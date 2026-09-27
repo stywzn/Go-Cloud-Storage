@@ -9,20 +9,57 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"mime/multipart"
+	"sort"
+	"strings"
 	"time"
 
+	redis "github.com/go-redis/redis/v8"
+	"github.com/google/uuid"
 	"github.com/stywzn/Go-Cloud-Storage/internal/metrics"
 	"github.com/stywzn/Go-Cloud-Storage/internal/model"
 	"github.com/stywzn/Go-Cloud-Storage/internal/repository"
 	"github.com/stywzn/Go-Cloud-Storage/internal/storage"
 	"github.com/stywzn/Go-Cloud-Storage/pkg/db"
+	"github.com/stywzn/Go-Cloud-Storage/pkg/logger"
+	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
+)
+
+const (
+	fileMetaCachePrefix      = "storage:file:meta:"
+	fileMetaCacheTTL         = 10 * time.Minute
+	fileMetaCacheJitter      = 5 * time.Minute
+	fileMetaCacheEmptyTTL    = 1 * time.Minute
+	mergeLockTTL             = 10 * time.Second
+	mergeLockRenewInterval   = 5 * time.Second
+	mergeLockOpTimeout       = 2 * time.Second
+	mergeLockWatchdogTimeout = 2 * time.Second
+)
+
+var (
+	ErrMergeInProgress = errors.New("merge already in progress")
+
+	releaseLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("DEL", KEYS[1])
+end
+return 0`)
+
+	renewLockScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+	return redis.call("EXPIRE", KEYS[1], ARGV[2])
+end
+return 0`)
 )
 
 type FileService interface {
 	UploadFile(ctx context.Context, file *multipart.FileHeader, userID uint) (*model.File, error)
+	GetFileInfo(ctx context.Context, fileHash string) (*model.File, error)
+	DeleteFile(ctx context.Context, fileHash string) error
 	// 分片上传接口
-	InitUpload(ctx context.Context, userID uint, fileName string, totalSize int64, chunkSize int64) (string, int64, error)
+	InitUpload(ctx context.Context, userID uint, fileName string, totalSize int64, chunkSize int64, fileHash string) (string, int64, error)
 	UploadPart(ctx context.Context, uploadID string, partNumber int, r io.Reader, size int64) error
 	CompleteUpload(ctx context.Context, uploadID string, userID uint) (*model.File, error)
 	GetUploadStatus(ctx context.Context, uploadID string) (*model.UploadTask, error)
@@ -33,6 +70,7 @@ type fileService struct {
 	userRepo     repository.UserRepository
 	taskRepo     repository.UploadTaskRepository
 	store        storage.StorageEngine
+	metaSF       singleflight.Group
 	defaultQuota int64 // 默认配额 5GB
 }
 
@@ -49,6 +87,66 @@ func NewFileService(
 		store:        store,
 		defaultQuota: 5 * 1024 * 1024 * 1024, // 5GB
 	}
+}
+
+func (s *fileService) fileMetaCacheKey(fileHash string) string {
+	return fileMetaCachePrefix + fileHash
+}
+
+func (s *fileService) writeFileMetaCache(ctx context.Context, cacheKey string, file *model.File) {
+	if db.RDB == nil {
+		return
+	}
+
+	if file == nil {
+		if err := db.RDB.Set(ctx, cacheKey, "null", fileMetaCacheEmptyTTL).Err(); err != nil {
+			logger.Log.Warn("write empty file meta cache failed", zap.Error(err), zap.String("cache_key", cacheKey))
+		}
+		return
+	}
+
+	b, err := json.Marshal(file)
+	if err != nil {
+		logger.Log.Warn("marshal file meta cache payload failed", zap.Error(err), zap.String("cache_key", cacheKey))
+		return
+	}
+
+	ttl := fileMetaCacheTTL + time.Duration(rand.Int63n(int64(fileMetaCacheJitter)+1))
+	if err := db.RDB.Set(ctx, cacheKey, b, ttl).Err(); err != nil {
+		logger.Log.Warn("write file meta cache failed", zap.Error(err), zap.String("cache_key", cacheKey))
+	}
+}
+
+func (s *fileService) invalidateFileMetaCache(ctx context.Context, fileHash string) {
+	if db.RDB == nil || fileHash == "" {
+		return
+	}
+	_ = db.RDB.Del(ctx, s.fileMetaCacheKey(fileHash)).Err()
+}
+
+func (s *fileService) readFileMetaFromCache(ctx context.Context, cacheKey string) (*model.File, bool, error) {
+	if db.RDB == nil {
+		return nil, false, nil
+	}
+
+	val, err := db.RDB.Get(ctx, cacheKey).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+
+	if val == "null" {
+		return nil, true, nil
+	}
+
+	var file model.File
+	if err := json.Unmarshal([]byte(val), &file); err != nil {
+		_ = db.RDB.Del(ctx, cacheKey).Err()
+		return nil, false, err
+	}
+	return &file, true, nil
 }
 
 // 生成上传 ID
@@ -80,13 +178,15 @@ func (s *fileService) UploadFile(ctx context.Context, fileHeader *multipart.File
 
 	// 计算 SHA256 哈希
 	hasher := sha256.New()
-	io.Copy(hasher, src)
+	_, _ = io.Copy(hasher, src)
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
 	// 检查文件是否已存在（秒传）
-	existingFile, err := s.repo.GetByHash(ctx, hash)
-	if err == nil && existingFile != nil {
-		// 文件已存在，直接关联
+	existingFile, err := s.GetFileInfo(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	if existingFile != nil {
 		return existingFile, nil
 	}
 
@@ -115,6 +215,8 @@ func (s *fileService) UploadFile(ctx context.Context, fileHeader *multipart.File
 		return nil, err
 	}
 
+	s.writeFileMetaCache(ctx, s.fileMetaCacheKey(hash), file)
+
 	// 扣减配额
 	user.Quota -= fileHeader.Size
 	s.userRepo.UpdateUser(ctx, user)
@@ -122,7 +224,48 @@ func (s *fileService) UploadFile(ctx context.Context, fileHeader *multipart.File
 	return file, nil
 }
 
-func (s *fileService) InitUpload(ctx context.Context, userID uint, fileName string, totalSize int64, chunkSize int64) (string, int64, error) {
+func (s *fileService) GetFileInfo(ctx context.Context, fileHash string) (*model.File, error) {
+	fileHash = strings.TrimSpace(strings.ToLower(fileHash))
+	if fileHash == "" {
+		return nil, errors.New("file hash is required")
+	}
+
+	cacheKey := s.fileMetaCacheKey(fileHash)
+	if file, hit, err := s.readFileMetaFromCache(ctx, cacheKey); err == nil && hit {
+		return file, nil
+	} else if err != nil {
+		logger.Log.Warn("read file meta cache failed", zap.Error(err), zap.String("cache_key", cacheKey))
+	}
+
+	val, err, _ := s.metaSF.Do(cacheKey, func() (interface{}, error) {
+		if file, hit, err := s.readFileMetaFromCache(ctx, cacheKey); err == nil && hit {
+			return file, nil
+		}
+
+		file, err := s.repo.GetByHash(ctx, fileHash)
+		if err != nil {
+			return nil, err
+		}
+
+		s.writeFileMetaCache(ctx, cacheKey, file)
+		return file, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if val == nil {
+		return nil, nil
+	}
+
+	cached, ok := val.(*model.File)
+	if !ok {
+		return nil, errors.New("invalid cached file meta result")
+	}
+	return cached, nil
+}
+
+func (s *fileService) InitUpload(ctx context.Context, userID uint, fileName string, totalSize int64, chunkSize int64, fileHash string) (string, int64, error) {
 	// 获取用户
 	user, err := s.userRepo.GetUserByID(ctx, userID)
 	if err != nil {
@@ -136,6 +279,7 @@ func (s *fileService) InitUpload(ctx context.Context, userID uint, fileName stri
 	}
 
 	uploadID := generateUploadID()
+	fileHash = strings.TrimSpace(strings.ToLower(fileHash))
 
 	// 计算总chunk数
 	totalChunks := (int(totalSize) + int(chunkSize) - 1) / int(chunkSize)
@@ -150,7 +294,7 @@ func (s *fileService) InitUpload(ctx context.Context, userID uint, fileName stri
 		TotalChunks:     totalChunks,
 		CompletedChunks: "[]",
 		Status:          0,
-		FileHash:        "",
+		FileHash:        fileHash,
 	}
 
 	if err := s.taskRepo.CreateTask(ctx, task); err != nil {
@@ -232,6 +376,14 @@ func (s *fileService) CompleteUpload(ctx context.Context, uploadID string, userI
 		return nil, errors.New("upload task not found")
 	}
 
+	if task.Status == 1 {
+		hash := task.FileHash
+		if hash == "" {
+			hash = uploadID
+		}
+		return s.GetFileInfo(ctx, hash)
+	}
+
 	if task.Status != 0 {
 		metrics.RecordUploadComplete("failed")
 		return nil, errors.New("upload task not in uploading status")
@@ -248,22 +400,38 @@ func (s *fileService) CompleteUpload(ctx context.Context, uploadID string, userI
 		return nil, fmt.Errorf("incomplete chunks: %d/%d", len(completed), task.TotalChunks)
 	}
 
-	// ==========================================
-	// 【核心优化】：Redis 分布式锁，防御多协程并发合并
-	// ==========================================
-	lockKey := fmt.Sprintf("lock:merge:%s", uploadID)
-	// 尝试获取锁，设置 30 秒超时防死锁
-	acquired, err := db.RDB.SetNX(ctx, lockKey, "locked", 30*time.Second).Result()
+	sort.Ints(completed)
+
+	if db.RDB == nil {
+		return nil, errors.New("redis client is not initialized")
+	}
+
+	lockTarget := task.FileHash
+	if lockTarget == "" {
+		lockTarget = uploadID
+	}
+	lockKey := fmt.Sprintf("storage:file_merge:lock:%s", lockTarget)
+	lockValue := uuid.NewString()
+
+	acquired, err := db.RDB.SetNX(ctx, lockKey, lockValue, mergeLockTTL).Result()
 	if err != nil {
-		return nil, fmt.Errorf("redis error checking lock: %v", err)
+		return nil, fmt.Errorf("redis error checking lock: %w", err)
 	}
 	if !acquired {
-		// 没拿到锁，说明别的网络请求正在合并这个文件，直接阻断脏写
-		return nil, errors.New("merge already in progress for this upload")
+		return nil, ErrMergeInProgress
 	}
-	// 确保函数退出时（无论成功失败）释放锁
-	defer db.RDB.Del(context.Background(), lockKey)
-	// ==========================================
+
+	watchdogCtx, cancelWatchdog := context.WithCancel(context.Background())
+	go s.runMergeLockWatchdog(watchdogCtx, lockKey, lockValue)
+	defer func() {
+		cancelWatchdog()
+
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), mergeLockOpTimeout)
+		defer releaseCancel()
+		if _, err := releaseLockScript.Run(releaseCtx, db.RDB, []string{lockKey}, lockValue).Result(); err != nil {
+			logger.Log.Warn("release merge lock failed", zap.Error(err), zap.String("lock_key", lockKey))
+		}
+	}()
 
 	// 调用存储引擎合并分片
 	parts := make([]storage.Part, len(completed))
@@ -288,11 +456,16 @@ func (s *fileService) CompleteUpload(ctx context.Context, uploadID string, userI
 		return nil, err
 	}
 
+	fileHash := task.FileHash
+	if fileHash == "" {
+		fileHash = uploadID
+	}
+
 	// 创建文件记录
 	file := &model.File{
 		OriginalName: task.FileName,
 		StoredName:   finalKey,
-		Hash:         uploadID,
+		Hash:         fileHash,
 		Size:         task.FileSize,
 		FilePath:     finalKey,
 	}
@@ -306,12 +479,65 @@ func (s *fileService) CompleteUpload(ctx context.Context, uploadID string, userI
 		return nil, err
 	}
 
+	s.writeFileMetaCache(ctx, s.fileMetaCacheKey(fileHash), file)
+
 	// 更新Prometheus指标
 	metrics.RecordUploadComplete("success")
 	metrics.UserStorageUsage.WithLabelValues(fmt.Sprintf("%d", userID)).Set(float64(task.FileSize))
 	metrics.StorageQuotaRemaining.WithLabelValues(fmt.Sprintf("%d", userID)).Set(float64(user.Quota))
 
 	return file, nil
+}
+
+func (s *fileService) runMergeLockWatchdog(ctx context.Context, lockKey, lockValue string) {
+	if db.RDB == nil {
+		return
+	}
+
+	ticker := time.NewTicker(mergeLockRenewInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(context.Background(), mergeLockWatchdogTimeout)
+			ret, err := renewLockScript.Run(
+				renewCtx,
+				db.RDB,
+				[]string{lockKey},
+				lockValue,
+				int(mergeLockTTL.Seconds()),
+			).Int()
+			cancel()
+			if err != nil {
+				logger.Log.Warn("watchdog renew merge lock failed", zap.Error(err), zap.String("lock_key", lockKey))
+				continue
+			}
+			if ret == 0 {
+				logger.Log.Warn("watchdog lost merge lock", zap.String("lock_key", lockKey))
+				return
+			}
+		}
+	}
+}
+
+func (s *fileService) DeleteFile(ctx context.Context, fileHash string) error {
+	fileHash = strings.TrimSpace(strings.ToLower(fileHash))
+	if fileHash == "" {
+		return errors.New("file hash is required")
+	}
+
+	deleted, err := s.repo.SoftDeleteByHash(ctx, fileHash)
+	if err != nil {
+		return err
+	}
+
+	if deleted {
+		s.invalidateFileMetaCache(ctx, fileHash)
+	}
+	return nil
 }
 
 func (s *fileService) GetUploadStatus(ctx context.Context, uploadID string) (*model.UploadTask, error) {

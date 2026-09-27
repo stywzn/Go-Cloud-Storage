@@ -13,6 +13,8 @@ type File struct {
 	Size         int64  `json:"size"`
 	Type         string `json:"type" gorm:"type:varchar(128)"`
 	FilePath     string `gorm:"type:varchar(512);not null" json:"-"` // 物理路径不返回给前端
+	IsDeleted    bool   `json:"is_deleted" gorm:"type:tinyint(1);not null;default:0;index"`
+	DeletedAtMs  int64  `json:"deleted_at_ms" gorm:"not null;default:0;index"`
 }
 
 func (File) TableName() string {

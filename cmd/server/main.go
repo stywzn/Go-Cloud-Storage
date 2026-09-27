@@ -21,6 +21,9 @@ import (
 )
 
 func main() {
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+
 	// 1. 初始化日志
 	logger.Init()
 	defer logger.Log.Sync()
@@ -73,6 +76,9 @@ func main() {
 
 	// 7. 初始化服务层
 	fileService := service.NewFileService(fileRepo, userRepo, taskRepo, storageEngine)
+	fileGCWorker := service.NewFileGCWorker(fileRepo, storageEngine, time.Hour, 24*time.Hour, 200)
+	fileGCWorker.Start(appCtx)
+	logger.Log.Info("File GC worker started")
 
 	// 8. 初始化处理器层
 	fileHandler := handler.NewFileHandler(fileService)
@@ -101,6 +107,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	logger.Log.Info("Shutting down server...")
+	appCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -118,6 +125,8 @@ func setupRoutes(r *gin.Engine, fileHandler *handler.FileHandler) {
 	{
 		// 基础上传接口（单文件，无分片）
 		v1.POST("/upload", fileHandler.UploadHandler)
+		v1.GET("/file/:file_hash", fileHandler.GetFileInfo)
+		v1.DELETE("/file/:file_hash", fileHandler.DeleteFile)
 
 		// 分片上传接口
 		uploadGroup := v1.Group("/upload")

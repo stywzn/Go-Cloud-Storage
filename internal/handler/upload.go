@@ -39,6 +39,7 @@ func (h *FileHandler) UploadHandler(c *gin.Context) {
 func (h *FileHandler) InitUpload(c *gin.Context) {
 	userID := middleware.GetUserID(c)
 	fileName := c.PostForm("file_name")
+	fileHash := c.PostForm("file_hash")
 	totalSize, _ := strconv.ParseInt(c.PostForm("total_size"), 10, 64)
 
 	if fileName == "" || totalSize <= 0 {
@@ -55,7 +56,7 @@ func (h *FileHandler) InitUpload(c *gin.Context) {
 		}
 	}
 
-	uploadID, respChunkSize, err := h.svc.InitUpload(c.Request.Context(), userID, fileName, totalSize, chunkSize)
+	uploadID, respChunkSize, err := h.svc.InitUpload(c.Request.Context(), userID, fileName, totalSize, chunkSize, fileHash)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -103,6 +104,13 @@ func (h *FileHandler) CompleteUpload(c *gin.Context) {
 
 	res, err := h.svc.CompleteUpload(c.Request.Context(), uploadID, userID)
 	if err != nil {
+		if err == service.ErrMergeInProgress {
+			c.JSON(http.StatusOK, gin.H{
+				"msg":       "merge already in progress, please query upload status later",
+				"upload_id": uploadID,
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -119,4 +127,31 @@ func (h *FileHandler) GetUploadStatus(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": status})
+}
+
+// GetFileInfo 获取文件元数据
+// 路由参数：file_hash
+func (h *FileHandler) GetFileInfo(c *gin.Context) {
+	fileHash := c.Param("file_hash")
+	info, err := h.svc.GetFileInfo(c.Request.Context(), fileHash)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if info == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": info})
+}
+
+// DeleteFile 软删除文件（异步 GC 最终清理物理文件）
+// 路由参数：file_hash
+func (h *FileHandler) DeleteFile(c *gin.Context) {
+	fileHash := c.Param("file_hash")
+	if err := h.svc.DeleteFile(c.Request.Context(), fileHash); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"msg": "file soft-deleted, gc will clean physical data asynchronously"})
 }

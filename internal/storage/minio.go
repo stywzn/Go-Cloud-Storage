@@ -138,6 +138,27 @@ func (m *MinIOStorage) AbortUpload(uploadID string) error {
 	return nil
 }
 
+func (m *MinIOStorage) DeleteObject(ctx context.Context, objectName string) error {
+	return m.client.RemoveObject(ctx, m.bucket, objectName, minio.RemoveObjectOptions{})
+}
+
+func (m *MinIOStorage) DeletePrefix(ctx context.Context, prefix string) error {
+	objectsChan := m.client.ListObjects(ctx, m.bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	})
+
+	for object := range objectsChan {
+		if object.Err != nil {
+			return object.Err
+		}
+		if err := m.client.RemoveObject(ctx, m.bucket, object.Key, minio.RemoveObjectOptions{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *MinIOStorage) UploadStream(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
 	_, err := m.client.PutObject(ctx, m.bucket, objectName, reader, size, minio.PutObjectOptions{
 		ContentType: contentType,

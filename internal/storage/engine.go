@@ -11,6 +11,8 @@ type StorageEngine interface {
 	UploadPart(uploadID string, partNumber int, r io.Reader, size int64) error // 修复：partNumber 是 int
 	CompleteUpload(uploadID string, parts []Part) (string, error)
 	AbortUpload(uploadID string) error
+	DeleteObject(ctx context.Context, objectName string) error
+	DeletePrefix(ctx context.Context, prefix string) error
 	UploadStream(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error
 }
 

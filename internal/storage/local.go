@@ -78,10 +78,54 @@ func (s *LocalStorage) AbortUpload(uploadID string) error {
 	return os.RemoveAll(filepath.Join(s.basePath, "temp", uploadID))
 }
 
-// 在 internal/storage/local.go 中加入:
-// 必须严格是：ctx, 字符串, io.Reader, int64, 字符串
-func (l *LocalStorage) UploadStream(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
-	// 你的内部逻辑...
-	// 如果还没写具体逻辑，直接 return nil 占位即可
+func (s *LocalStorage) DeleteObject(ctx context.Context, objectName string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	fullPath := filepath.Join(s.basePath, objectName)
+	if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s *LocalStorage) DeletePrefix(ctx context.Context, prefix string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	fullPath := filepath.Join(s.basePath, prefix)
+	if err := os.RemoveAll(fullPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (s *LocalStorage) UploadStream(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	fullPath := filepath.Join(s.basePath, objectName)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return err
+	}
+
+	out, err := os.Create(fullPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, reader); err != nil {
+		return err
+	}
 	return nil
 }
